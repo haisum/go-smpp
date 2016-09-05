@@ -242,6 +242,72 @@ func (t *Transmitter) Submit(sm *ShortMessage) (*ShortMessage, error) {
 	return t.submitMsg(sm, p, uint8(sm.Text.Type()))
 }
 
+// SplitLong splits a message in multiple parts if it exceeds 70 characters in UCS or 160 characters in Latin 1,
+// adds suitable UDH headers and returns array of splitted pdu body objects that may be sent using SubmitPart method.
+// This method doesn't add UDH information if sms is of size one.
+func (t *Transmitter) SplitLong(sm *ShortMessage) []pdu.Body {
+	var pb []pdu.Body
+	maxLen := 134 // 140-6 (UDH)
+	rawMsg := sm.Text.Encode()
+	countParts := int(len(rawMsg)/maxLen) + 1
+
+	ri := uint8(t.r.Intn(128))
+	UDHHeader := make([]byte, 6)
+	UDHHeader[0] = 5
+	UDHHeader[1] = 0
+	UDHHeader[2] = 3
+	UDHHeader[3] = ri
+	UDHHeader[4] = uint8(countParts)
+	for i := 0; i < countParts; i++ {
+		UDHHeader[5] = uint8(i + 1)
+		p := pdu.NewSubmitSM()
+		f := p.Fields()
+		f.Set(pdufield.SourceAddr, sm.Src)
+		f.Set(pdufield.DestinationAddr, sm.Dst)
+		if i != countParts-1 {
+			f.Set(pdufield.ShortMessage, pdutext.Raw(append(UDHHeader, rawMsg[i*maxLen:(i+1)*maxLen]...)))
+		} else {
+			f.Set(pdufield.ShortMessage, pdutext.Raw(append(UDHHeader, rawMsg[i*maxLen:]...)))
+		}
+		f.Set(pdufield.RegisteredDelivery, uint8(sm.Register))
+		if sm.Validity != time.Duration(0) {
+			f.Set(pdufield.ValidityPeriod, convertValidity(sm.Validity))
+		}
+		f.Set(pdufield.ServiceType, sm.ServiceType)
+		f.Set(pdufield.SourceAddrTON, sm.SourceAddrTON)
+		f.Set(pdufield.SourceAddrNPI, sm.SourceAddrNPI)
+		f.Set(pdufield.DestAddrTON, sm.DestAddrTON)
+		f.Set(pdufield.DestAddrNPI, sm.DestAddrNPI)
+		f.Set(pdufield.ESMClass, 0x40)
+		f.Set(pdufield.ProtocolID, sm.ProtocolID)
+		f.Set(pdufield.PriorityFlag, sm.PriorityFlag)
+		f.Set(pdufield.ScheduleDeliveryTime, sm.ScheduleDeliveryTime)
+		f.Set(pdufield.ReplaceIfPresentFlag, sm.ReplaceIfPresentFlag)
+		f.Set(pdufield.SMDefaultMsgID, sm.SMDefaultMsgID)
+		f.Set(pdufield.DataCoding, uint8(sm.Text.Type()))
+		pb = append(pb, p)
+	}
+	return pb
+}
+
+// SubmitPart takes pdu.Body returned from SplitLong and sends the partial message
+func (t *Transmitter) SubmitPart(sm *ShortMessage, p pdu.Body) (*ShortMessage, error) {
+	resp, err := t.do(p)
+	if err != nil {
+		return nil, err
+	}
+	sm.resp.Lock()
+	sm.resp.p = resp.PDU
+	sm.resp.Unlock()
+	if id := resp.PDU.Header().ID; id != pdu.SubmitSMRespID {
+		return sm, fmt.Errorf("unexpected PDU ID: %s", id)
+	}
+	if s := resp.PDU.Header().Status; s != 0 {
+		return sm, s
+	}
+	return sm, resp.Err
+}
+
 // SubmitLongMsg sends a long message (more than 140 bytes)
 // and returns and updates the given sm with the response status.
 // It returns the same sm object.
