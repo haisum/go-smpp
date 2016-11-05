@@ -182,6 +182,7 @@ type ShortMessage struct {
 	Text     pdutext.Codec
 	Validity time.Duration
 	Register DeliverySetting
+	IsFlash  bool // does dataCoding = ((dataCoding | 0x10) & 0xFC) for indicating class 0 message
 
 	// Other fields, normally optional.
 	ServiceType          string
@@ -314,16 +315,21 @@ func (t *Transmitter) do(p pdu.Body) (*tx, error) {
 // Submit sends a short message and returns and updates the given
 // sm with the response status. It returns the same sm object.
 func (t *Transmitter) Submit(sm *ShortMessage) (*ShortMessage, error) {
+	dataCoding := uint8(sm.Text.Type())
+	if sm.IsFlash {
+		dataCoding = ((dataCoding | 0x10) & 0xFC)
+	}
 	if len(sm.DstList) > 0 || len(sm.DLs) > 0 {
 		// if we have a single destination address add it to the list
 		if sm.Dst != "" {
 			sm.DstList = append(sm.DstList, sm.Dst)
 		}
 		p := pdu.NewSubmitMulti()
-		return t.submitMsgMulti(sm, p, uint8(sm.Text.Type()))
+
+		return t.submitMsgMulti(sm, p, dataCoding)
 	}
 	p := pdu.NewSubmitSM()
-	return t.submitMsg(sm, p, uint8(sm.Text.Type()))
+	return t.submitMsg(sm, p, dataCoding)
 }
 
 // SplitLong splits a message in multiple parts if it exceeds 70 characters in UCS or 160 characters in Latin 1,
@@ -368,7 +374,11 @@ func (t *Transmitter) SplitLong(sm *ShortMessage) []pdu.Body {
 		f.Set(pdufield.ScheduleDeliveryTime, sm.ScheduleDeliveryTime)
 		f.Set(pdufield.ReplaceIfPresentFlag, sm.ReplaceIfPresentFlag)
 		f.Set(pdufield.SMDefaultMsgID, sm.SMDefaultMsgID)
-		f.Set(pdufield.DataCoding, uint8(sm.Text.Type()))
+		dataCoding := uint8(sm.Text.Type())
+		if sm.IsFlash {
+			dataCoding = ((dataCoding | 0x10) & 0xFC)
+		}
+		f.Set(pdufield.DataCoding, dataCoding)
 		pb = append(pb, p)
 	}
 	return pb
@@ -433,7 +443,11 @@ func (t *Transmitter) SubmitLongMsg(sm *ShortMessage) (*ShortMessage, error) {
 		f.Set(pdufield.ScheduleDeliveryTime, sm.ScheduleDeliveryTime)
 		f.Set(pdufield.ReplaceIfPresentFlag, sm.ReplaceIfPresentFlag)
 		f.Set(pdufield.SMDefaultMsgID, sm.SMDefaultMsgID)
-		f.Set(pdufield.DataCoding, uint8(sm.Text.Type()))
+		dataCoding := uint8(sm.Text.Type())
+		if sm.IsFlash {
+			dataCoding = ((dataCoding | 0x10) & 0xFC)
+		}
+		f.Set(pdufield.DataCoding, dataCoding)
 		resp, err := t.do(p)
 		if err != nil {
 			return nil, err
